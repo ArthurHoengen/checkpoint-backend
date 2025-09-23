@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+sqlalchemy
+psycopg2-binary
+alembic
+python-dotenv
+bcrypt==3.2.2
+PyJWT
+httpx
+pydantic
+pydantic-settings
+python-jose
+passlib[bcrypt]
+requests

@@ -1,0 +1,56 @@
+services:
+  api:
+    build: .
+    container_name: checkpoint_api
+    restart: always
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    depends_on:
+      - db
+      - ollama
+    volumes:
+      - .:/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  db:
+    image: postgres:15
+    container_name: checkpoint_db
+    restart: always
+    environment:
+      POSTGRES_USER: checkpoint
+      POSTGRES_PASSWORD: qwertyuiop
+      POSTGRES_DB: checkpoint
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  adminer:
+    image: adminer
+    container_name: checkpoint_adminer
+    restart: always
+    ports:
+      - "8080:8080"
+    depends_on:
+      - db
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: checkpoint_ollama
+    restart: always
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      - OLLAMA_KEEP_ALIVE=24h
+      # Força o Ollama a usar GPU e baixa VRAM
+      - OLLAMA_DEVICE=gpu
+      - OLLAMA_LOW_VRAM=true
+    command: serve
+
+volumes:
+  pgdata:
+  ollama_data:
