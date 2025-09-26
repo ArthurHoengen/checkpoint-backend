@@ -21,7 +21,7 @@ Sistema de chat com suporte emocional usando FastAPI, PostgreSQL e integração 
 
 ### 1. Clone o repositório
 ```bash
-git clone <seu-repositorio>
+git clone https://github.com/ArthurHoengen/checkpoint-backend.git
 cd checkpoint/backend
 ```
 
