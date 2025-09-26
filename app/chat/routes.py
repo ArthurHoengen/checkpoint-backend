@@ -1,6 +1,7 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
+from typing import List
 from app.core.database import get_db
 from . import schemas, services
 from .models import Conversation
@@ -20,17 +21,6 @@ def set_mode(conversation_id: int, mode: str, db: Session = Depends(get_db)):
         raise HTTPException(404, "Conversation not found")
     return conv
 
-@router.post("/conversations/{conversation_id}/ask", response_model=schemas.MessageOut)
-def ask(conversation_id: int, msg: schemas.MessageCreate, db: Session = Depends(get_db)):
-    response = services.get_response(db, conversation_id, msg)
-
-    if response is None:
-        conv = db.get(Conversation, conversation_id)
-        if conv is None:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "Conversation not found")
-        return Response(status_code=status.HTTP_204_NO_CONTENT)
-
-    return response
 
 @router.get(
     "/conversations/{conversation_id}/messages",
@@ -46,12 +36,129 @@ def get_last_messages(conversation_id: int, db: Session = Depends(get_db)):
     return list(reversed(messages))
 
 
-@router.post("/conversations/{conversation_id}/reply", response_model=schemas.MessageOut)
-def reply_as_user(
+
+# Novas rotas com detecção de crise
+@router.post("/conversations/{conversation_id}/ask-with-crisis-detection")
+async def ask_with_crisis_detection(
     conversation_id: int,
-    msg: schemas.MessageCreate,
+    msg: schemas.MessageWithCrisisCreate,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db)
+):
+    """Endpoint principal com detecção de crise integrada."""
+
+    ai_response, crisis_analysis = await services.get_response_with_crisis_detection(
+        db, conversation_id, msg
+    )
+
+    # Se requer atenção humana, adicionar task de notificação
+    if crisis_analysis and crisis_analysis.requires_human:
+        background_tasks.add_task(
+            _notify_monitors_of_crisis,
+            conversation_id,
+            crisis_analysis
+        )
+
+    # Retornar resposta
+    if ai_response is None:
+        conv = db.get(Conversation, conversation_id)
+        if conv is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Conversation not found")
+
+        # Se foi escalado, retornar info sobre escalação
+        if conv.status.value == "escalated":
+            return {
+                "message": "Conversa foi escalada para um monitor humano",
+                "escalated": True,
+                "crisis_analysis": crisis_analysis
+            }
+
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    # Converter ai_response para schema se existir
+    ai_response_schema = None
+    if ai_response:
+        ai_response_schema = schemas.MessageOut.model_validate(ai_response)
+
+    return {
+        "ai_response": ai_response_schema,
+        "crisis_analysis": crisis_analysis,
+        "escalated": crisis_analysis.emergency_contact if crisis_analysis else False
+    }
+
+# Rotas para monitores
+@router.get("/monitor/dashboard", response_model=List[schemas.ConversationOut])
+def get_monitor_dashboard(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    response = services.add_user_message(db, conversation_id, current_user.id, msg)
-    return response
+    """Dashboard para monitores verem conversas que precisam de atenção."""
+    conversations = services.get_conversations_needing_attention(db)
+    return conversations
+
+@router.post("/monitor/take-control/{conversation_id}")
+def monitor_take_control(
+    conversation_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Monitor assume controle de uma conversa."""
+    success = services.monitor_take_control(db, conversation_id, current_user.id)
+    if not success:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Conversation not found")
+
+    return {"message": "Monitor assumiu controle da conversa", "conversation_id": conversation_id}
+
+@router.post("/monitor/escalate/{conversation_id}")
+def escalate_conversation(
+    conversation_id: int,
+    escalation: schemas.EscalationRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Escala manualmente uma conversa para monitor."""
+    success = services.escalate_to_monitor(
+        db,
+        conversation_id,
+        current_user.id,
+        escalation.reason
+    )
+    if not success:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Conversation not found")
+
+    return {"message": "Conversa escalada com sucesso", "reason": escalation.reason}
+
+@router.get("/monitor/flagged-messages", response_model=List[schemas.MessageOut])
+def get_flagged_messages(
+    limit: int = 50,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Lista mensagens flagadas para revisão."""
+    messages = services.get_flagged_messages(db, limit)
+    return messages
+
+# Função auxiliar para notificações (executada em background)
+async def _notify_monitors_of_crisis(conversation_id: int, crisis_analysis: schemas.CrisisAnalysisOut):
+    """
+    Notifica monitores sobre crise detectada.
+    Esta função será executada em background.
+    """
+    # TODO: Implementar sistema de notificação real
+    # - WebSocket para monitores online
+    # - Email/SMS para monitores de plantão
+    # - Integração com sistemas de alerta
+
+    print(f"🚨 ALERTA DE CRISE - Conversa {conversation_id}")
+    print(f"Nível de risco: {crisis_analysis.risk_level}")
+    print(f"Confiança: {crisis_analysis.confidence:.2f}")
+    print(f"Requer humano: {crisis_analysis.requires_human}")
+    print(f"Emergência: {crisis_analysis.emergency_contact}")
+
+    if crisis_analysis.emergency_contact:
+        print("⚠️  EMERGÊNCIA - CONTATO IMEDIATO NECESSÁRIO")
+
+    # Aqui você pode adicionar:
+    # - await websocket_manager.broadcast_to_monitors(alert_data)
+    # - await email_service.send_crisis_alert(crisis_analysis)
+    # - await sms_service.send_emergency_alert(crisis_analysis)

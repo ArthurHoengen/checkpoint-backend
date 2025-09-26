@@ -33,12 +33,15 @@ class OllamaClient:
         Faz uma pergunta simples ao modelo e retorna apenas o texto da resposta.
         """
         model = model or self.default_model
-        response = self.chat(
+
+        # Usar generate ao invés de chat
+        response = self.generate(
             model=model,
-            messages=[{"role": "user", "content": prompt}]
+            prompt=prompt
         )
-        # A resposta do Ollama geralmente vem como {"message": {"content": "..."}}
+
+        # A resposta do Ollama generate vem como {"response": "..."}
         try:
-            return response["message"]["content"]
+            return response["response"]
         except (KeyError, TypeError):
             return str(response)  # fallback para debug
