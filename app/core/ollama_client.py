@@ -6,17 +6,6 @@ class OllamaClient:
         self.base_url = base_url or settings.ollama_base_url.rstrip("/")
         self.default_model = default_model or getattr(settings, "ollama_default_model", "llama3.2:1b")
 
-    def chat(self, model: str, messages: list[dict], stream: bool = False):
-        url = f"{self.base_url}/api/chat"
-        payload = {
-            "model": model,
-            "messages": [{"role": "assistant", "content": "Você é uma IA de suporte emocional. Responda sempre de forma empática e compreensiva. Sempre responda em português"}] + messages,
-            "stream": stream
-        }
-        resp = requests.post(url, json=payload)
-        resp.raise_for_status()
-        return resp.json()
-
     def generate(self, model: str, prompt: str, stream: bool = False):
         url = f"{self.base_url}/api/generate"
         payload = {
