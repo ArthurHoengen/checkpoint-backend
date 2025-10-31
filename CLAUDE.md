@@ -6,16 +6,33 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ### Running the Application
 ```bash
-# Development server
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+# Development server with WebSocket support (RECOMMENDED)
+python run_with_socketio.py
 
-# Production server (as per Dockerfile)
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+# Or manually with uvicorn
+uvicorn app.main:socket_app --reload --host 0.0.0.0 --port 8000
+
+# Legacy server without WebSocket (NOT RECOMMENDED)
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 ### Docker
+
+#### Development with Docker Compose (RECOMMENDED)
 ```bash
-# Build image
+# Full stack with PostgreSQL and Ollama
+docker-compose up -d
+
+# Rebuild after adding WebSocket dependencies
+./rebuild_docker.sh
+
+# View logs
+docker-compose logs -f api
+```
+
+#### Manual Docker Build
+```bash
+# Build image with WebSocket support
 docker build -t checkpoint-backend .
 
 # Run container
@@ -34,6 +51,7 @@ This is a FastAPI backend application for a chat system called "Checkpoint" with
 
 ### Core Structure
 - **FastAPI Application**: Entry point at `app/main.py`
+- **WebSocket Support**: Real-time communication via Socket.IO at `app/websocket/`
 - **Database**: PostgreSQL with SQLAlchemy ORM
 - **Authentication**: JWT-based with bcrypt password hashing
 - **External Services**: Ollama integration for AI chat functionality
@@ -48,7 +66,8 @@ This is a FastAPI backend application for a chat system called "Checkpoint" with
 #### Module Organization
 - `app/core/`: Core functionality (database, config, security, ollama client)
 - `app/auth/`: User authentication system (JWT, bcrypt)
-- `app/chat/`: Chat/conversation management
+- `app/chat/`: Chat/conversation management with crisis detection
+- `app/websocket/`: Real-time WebSocket communication (Socket.IO)
 - `app/logs/`: Logging services
 - `app/utils/`: Utility functions (anonymizer)
 
@@ -73,3 +92,28 @@ The chat system includes content moderation with:
 - **PostgreSQL**: Primary database
 - **JWT**: Authentication tokens
 - **bcrypt**: Password hashing
+- **Socket.IO**: Real-time bidirectional communication
+- **python-socketio**: Python Socket.IO server implementation
+
+## WebSocket Features
+
+### Real-Time Communication
+- **Chat Messages**: Instant message delivery between users and monitors
+- **Crisis Alerts**: Immediate notifications to monitors when crisis is detected
+- **Presence Indicators**: Monitor online/offline status and typing indicators
+- **Room Management**: Automatic room joining/leaving for conversations
+
+### WebSocket Events
+- `connect/disconnect`: Connection management
+- `join_conversation`: Join specific conversation room
+- `join_monitor`: Join monitor broadcast room
+- `send_message`: Send real-time messages
+- `typing`: Typing indicators
+- `new_message`: Receive new messages
+- `crisis_alert`: Crisis detection notifications
+- `monitor_joined`: Monitor presence notifications
+
+### Socket.IO Endpoints
+- WebSocket available at: `ws://localhost:8000/socket.io/`
+- Supports WebSocket and HTTP long-polling fallback
+- CORS enabled for frontend integration

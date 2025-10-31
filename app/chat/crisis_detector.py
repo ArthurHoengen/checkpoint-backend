@@ -163,10 +163,14 @@ EXEMPLO DE RESPOSTA: 'LOW:0.3'
 
 Sua análise:"""
 
-            response = self.ollama_client.ask(prompt, "llama3.2:3b")
+            response = await self.ollama_client.ask(prompt, "llama3.2:3b")
 
             # Limpar resposta e tentar parsing
             clean_response = response.strip().upper()
+
+            # Inicializar variáveis de fallback
+            risk_level = RiskLevel.NONE
+            confidence = 0.3
 
             # Parse da resposta no formato LEVEL:CONFIDENCE
             if ":" in clean_response:
@@ -174,18 +178,24 @@ Sua análise:"""
                 if len(parts) >= 2:
                     level_str = parts[0].strip()
                     confidence_str = parts[1].strip()
+                    confidence_match = re.search(r'(\d+\.?\d*)', confidence_str)
+
                     try:
-                        risk_level = RiskLevel(level_str.lower())
-                        confidence = float(confidence_str)
-                        confidence = max(0.0, min(1.0, confidence))  # Limitar entre 0-1
-                    except (ValueError, KeyError):
-                        # Se não conseguir parsear, usar fallback
-                        risk_level = RiskLevel.NONE
-                        confidence = 0.3
-                else:
-                    risk_level = RiskLevel.NONE
-                    confidence = 0.3
-            else:
+                        # Tentar parsear o nível de risco
+                        if level_str.lower() in ['none', 'low', 'medium', 'high', 'critical']:
+                            risk_level = RiskLevel(level_str.lower())
+
+                        # Tentar parsear a confiança
+                        if confidence_match:
+                            confidence = float(confidence_match.group(1))
+                            confidence = max(0.0, min(1.0, confidence))  # Limitar entre 0-1
+                    except (ValueError, KeyError, AttributeError) as e:
+                        # Se não conseguir parsear, manter fallback
+                        print(f"⚠️  Erro ao parsear resposta da IA: {e}")
+                        print(f"   Resposta recebida: {response}")
+
+            # Se ainda não parseou (sem ":" na resposta), usar fallback inteligente
+            if risk_level == RiskLevel.NONE and confidence == 0.3:
                 # Fallback se formato não esperado - analisar conteúdo da mensagem original
                 # Se a IA falhou, fazer análise simples baseada em palavras críticas
                 message_lower = message_text.lower()
@@ -242,6 +252,14 @@ Sua análise:"""
         requires_human = max_risk_level in [RiskLevel.HIGH, RiskLevel.CRITICAL]
         emergency_contact = max_risk_level == RiskLevel.CRITICAL
 
+        # Convert RiskLevel enums to strings for JSON serialization
+        def serialize_analysis(analysis: Dict) -> Dict:
+            """Convert RiskLevel enum to string in analysis dict."""
+            serialized = analysis.copy()
+            if "risk_level" in serialized and isinstance(serialized["risk_level"], RiskLevel):
+                serialized["risk_level"] = serialized["risk_level"].value
+            return serialized
+
         return CrisisAnalysis(
             risk_level=max_risk_level,
             confidence=combined_confidence,
@@ -249,9 +267,9 @@ Sua análise:"""
             requires_human=requires_human,
             emergency_contact=emergency_contact,
             analysis_details={
-                "keyword_analysis": keyword_analysis,
-                "pattern_analysis": pattern_analysis,
-                "ai_analysis": ai_analysis,
+                "keyword_analysis": serialize_analysis(keyword_analysis),
+                "pattern_analysis": serialize_analysis(pattern_analysis),
+                "ai_analysis": serialize_analysis(ai_analysis),
                 "message_length": len(original_text),
                 "timestamp": asyncio.get_event_loop().time()
             }

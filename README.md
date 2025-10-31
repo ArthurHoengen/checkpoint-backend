@@ -1,6 +1,8 @@
-# Checkpoint API - Backend
+# Checkpoint Backend
 
-Sistema de chat com suporte emocional usando FastAPI, PostgreSQL e integração com Ollama para IA conversacional.
+Backend da aplicação Checkpoint - Sistema de chatbot com detecção de crise e suporte humano em tempo real.
+
+> **✨ Agora com suporte completo a WebSocket/Socket.IO para comunicação em tempo real!**
 
 ## 🛠️ Tecnologias
 

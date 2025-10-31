@@ -23,6 +23,10 @@ pydantic-settings==2.10.1
 httpx==0.28.1
 requests==2.32.5
 
+# WebSocket Support
+python-socketio==5.11.4
+python-engineio==4.10.1
+
 # Dependencies
 click==8.3.0
 typing-extensions==4.15.0

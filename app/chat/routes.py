@@ -97,7 +97,7 @@ def get_monitor_dashboard(
     return conversations
 
 @router.post("/monitor/take-control/{conversation_id}")
-def monitor_take_control(
+async def monitor_take_control(
     conversation_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
@@ -107,10 +107,17 @@ def monitor_take_control(
     if not success:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Conversation not found")
 
+    # Notify via WebSocket that monitor joined
+    try:
+        from app.websocket.manager import socket_manager
+        await socket_manager.notify_monitor_joined(conversation_id, current_user.username)
+    except Exception as e:
+        print(f"Erro ao notificar entrada do monitor via WebSocket: {e}")
+
     return {"message": "Monitor assumiu controle da conversa", "conversation_id": conversation_id}
 
 @router.post("/monitor/escalate/{conversation_id}")
-def escalate_conversation(
+async def escalate_conversation(
     conversation_id: int,
     escalation: schemas.EscalationRequest,
     db: Session = Depends(get_db),
@@ -126,6 +133,17 @@ def escalate_conversation(
     if not success:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Conversation not found")
 
+    # Notify via WebSocket that conversation was escalated
+    try:
+        from app.websocket.manager import socket_manager
+        await socket_manager.broadcast_conversation_escalated(
+            conversation_id,
+            current_user.username,
+            escalation.reason
+        )
+    except Exception as e:
+        print(f"Erro ao notificar escalação via WebSocket: {e}")
+
     return {"message": "Conversa escalada com sucesso", "reason": escalation.reason}
 
 @router.get("/monitor/flagged-messages", response_model=List[schemas.MessageOut])
@@ -138,16 +156,27 @@ def get_flagged_messages(
     messages = services.get_flagged_messages(db, limit)
     return messages
 
+@router.get("/monitor/debug/connected")
+def get_connected_monitors():
+    """Debug endpoint - mostra monitores conectados via WebSocket."""
+    from app.websocket.manager import socket_manager
+    return {
+        "total_monitors": len(socket_manager.monitor_rooms),
+        "monitor_ids": list(socket_manager.monitor_rooms.keys()),
+        "monitor_details": {
+            monitor_id: len(sessions)
+            for monitor_id, sessions in socket_manager.monitor_rooms.items()
+        },
+        "total_sessions": sum(len(sessions) for sessions in socket_manager.monitor_rooms.values())
+    }
+
 # Função auxiliar para notificações (executada em background)
 async def _notify_monitors_of_crisis(conversation_id: int, crisis_analysis: schemas.CrisisAnalysisOut):
     """
     Notifica monitores sobre crise detectada.
     Esta função será executada em background.
     """
-    # TODO: Implementar sistema de notificação real
-    # - WebSocket para monitores online
-    # - Email/SMS para monitores de plantão
-    # - Integração com sistemas de alerta
+    from app.websocket.manager import socket_manager
 
     print(f"🚨 ALERTA DE CRISE - Conversa {conversation_id}")
     print(f"Nível de risco: {crisis_analysis.risk_level}")
@@ -158,7 +187,16 @@ async def _notify_monitors_of_crisis(conversation_id: int, crisis_analysis: sche
     if crisis_analysis.emergency_contact:
         print("⚠️  EMERGÊNCIA - CONTATO IMEDIATO NECESSÁRIO")
 
-    # Aqui você pode adicionar:
-    # - await websocket_manager.broadcast_to_monitors(alert_data)
+    # Broadcast crisis alert via WebSocket
+    try:
+        await socket_manager.broadcast_crisis_alert(
+            conversation_id,
+            crisis_analysis,
+            "Alerta de crise detectado"
+        )
+    except Exception as e:
+        print(f"Erro ao enviar alerta via WebSocket: {e}")
+
+    # TODO: Adicionar outros canais de notificação:
     # - await email_service.send_crisis_alert(crisis_analysis)
     # - await sms_service.send_emergency_alert(crisis_analysis)

@@ -23,6 +23,8 @@ class Conversation(Base):
     mode = Column(String, default="ollama")
     active = Column(Boolean, default=True)
     status = Column(Enum(ConversationStatus), default=ConversationStatus.ACTIVE)
+    user_connected = Column(Boolean, default=True)  # Se o usuário está conectado via WebSocket
+    last_activity = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)  # Última atividade do usuário
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
     messages = relationship("Message", back_populates="conversation", cascade="all, delete-orphan")
