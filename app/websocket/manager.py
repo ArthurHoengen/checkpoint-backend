@@ -3,7 +3,9 @@ from typing import Dict, Set, Optional, Any
 from datetime import datetime
 import socketio
 from sqlalchemy.orm import Session
+from jose import JWTError
 from app.core.database import get_db
+from app.core.security import decode_access_token
 from app.chat import services as chat_services
 from app.chat.schemas import MessageWithCrisisCreate
 from app.chat.models import Message
@@ -13,8 +15,15 @@ logger = logging.getLogger(__name__)
 
 class SocketManager:
     def __init__(self):
+        # Improved CORS configuration - only allow specific origins
+        allowed_origins = [
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+            # Add production URLs here when deploying
+        ]
+
         self.sio = socketio.AsyncServer(
-            cors_allowed_origins="*",
+            cors_allowed_origins=allowed_origins,
             async_mode='asgi',
             logger=True,
             engineio_logger=True
@@ -29,7 +38,8 @@ class SocketManager:
         # Room tracking
         self.conversation_rooms: Dict[int, Set[str]] = {}  # conversation_id -> set of session_ids
         self.monitor_rooms: Dict[str, Set[str]] = {}       # monitor_id -> set of session_ids
-        self.user_sessions: Dict[str, Dict[str, Any]] = {} # session_id -> user_info
+        # Improved structure: session_id -> {type, monitor_id?, conversations[], rooms[]}
+        self.user_sessions: Dict[str, Dict[str, Any]] = {}
 
         self.setup_events()
 
@@ -48,8 +58,16 @@ class SocketManager:
             if sid in self.user_sessions:
                 session_info = self.user_sessions[sid]
                 if session_info.get('type') == 'user':
-                    conversation_id = session_info.get('conversation_id')
-                    if conversation_id:
+                    # Handle new list-based structure
+                    conversations = session_info.get('conversations', [])
+                    # Also check old structure for backward compatibility
+                    if not conversations:
+                        old_conv_id = session_info.get('conversation_id')
+                        if old_conv_id:
+                            conversations = [old_conv_id]
+
+                    # Mark all user conversations as disconnected
+                    for conversation_id in conversations:
                         await self.mark_conversation_disconnected(conversation_id)
 
             await self.cleanup_user_session(sid)
@@ -72,26 +90,35 @@ class SocketManager:
                 self.conversation_rooms[conversation_id] = set()
             self.conversation_rooms[conversation_id].add(sid)
 
-            # CRITICAL FIX: Merge session info instead of overwriting
-            # This preserves monitor_id if the user is a monitor
+            # ROBUST FIX: Merge session info with support for multiple rooms and conversations
             if sid in self.user_sessions:
-                # Update existing session with conversation info
-                existing_data = self.user_sessions[sid]
-                self.user_sessions[sid] = {
-                    **existing_data,  # Preserve existing data (like monitor_id)
-                    'conversation_id': conversation_id,
-                    'conversation_room': room_name
-                }
-                logger.info(f"Updated session for {sid}: joined conversation {conversation_id} (monitor_id preserved: {existing_data.get('monitor_id')})")
+                # Update existing session
+                session = self.user_sessions[sid]
+
+                # Add conversation to list if not already there
+                if 'conversations' not in session:
+                    session['conversations'] = []
+                if conversation_id not in session['conversations']:
+                    session['conversations'].append(conversation_id)
+
+                # Add room to list if not already there
+                if 'rooms' not in session:
+                    session['rooms'] = []
+                if room_name not in session['rooms']:
+                    session['rooms'].append(room_name)
+
+                logger.info(f"Updated session for {sid}: joined conversation {conversation_id}")
+                logger.info(f"   Type: {session.get('type')}, Monitor ID: {session.get('monitor_id')}")
+                logger.info(f"   Conversations: {session['conversations']}, Rooms: {session['rooms']}")
             else:
-                # Create new session
+                # Create new session with list structure
                 self.user_sessions[sid] = {
                     'type': user_type,
-                    'conversation_id': conversation_id,
-                    'room': room_name
+                    'conversations': [conversation_id],
+                    'rooms': [room_name]
                 }
+                logger.info(f"Created new session for {sid}: {user_type} in conversation {conversation_id}")
 
-            logger.info(f"{user_type.capitalize()} {sid} joined conversation {conversation_id}")
             await self.sio.emit('joined_conversation', {
                 'conversation_id': conversation_id
             }, to=sid)
@@ -102,9 +129,44 @@ class SocketManager:
             logger.info(f"   Data: {data}")
 
             monitor_id = data.get('monitor_id')
+            token = data.get('token')
+
             if not monitor_id:
                 logger.error(f"❌ No monitor_id provided in data: {data}")
                 await self.sio.emit('error', {'message': 'monitor_id required'}, to=sid)
+                return
+
+            # SECURITY: Validate JWT token for monitors
+            if not token:
+                logger.error(f"❌ No authentication token provided for monitor {monitor_id}")
+                await self.sio.emit('error', {'message': 'Authentication required for monitors'}, to=sid)
+                return
+
+            try:
+                # Decode and validate token
+                payload = decode_access_token(token)
+                username = payload.get('sub')
+
+                if not username:
+                    logger.error(f"❌ Invalid token: no username in payload")
+                    await self.sio.emit('error', {'message': 'Invalid authentication token'}, to=sid)
+                    return
+
+                # Verify that the monitor_id matches the authenticated user
+                if username != monitor_id:
+                    logger.error(f"❌ Monitor ID mismatch: token={username}, monitor_id={monitor_id}")
+                    await self.sio.emit('error', {'message': 'Monitor ID does not match authenticated user'}, to=sid)
+                    return
+
+                logger.info(f"✅ Monitor {monitor_id} authenticated successfully")
+
+            except JWTError as e:
+                logger.error(f"❌ JWT validation failed for monitor {monitor_id}: {e}")
+                await self.sio.emit('error', {'message': 'Invalid or expired authentication token'}, to=sid)
+                return
+            except Exception as e:
+                logger.error(f"❌ Unexpected error during authentication: {e}")
+                await self.sio.emit('error', {'message': 'Authentication failed'}, to=sid)
                 return
 
             # Add to monitor room
@@ -116,15 +178,33 @@ class SocketManager:
                 self.monitor_rooms[monitor_id] = set()
             self.monitor_rooms[monitor_id].add(sid)
 
-            # Store monitor session info
-            self.user_sessions[sid] = {
-                'type': 'monitor',
-                'monitor_id': monitor_id,
-                'room': room_name
-            }
+            # ROBUST FIX: Merge session info instead of overwriting
+            if sid in self.user_sessions:
+                # Update existing session
+                session = self.user_sessions[sid]
+                session['type'] = 'monitor'
+                session['monitor_id'] = monitor_id
+
+                # Add room to list if not already there
+                if 'rooms' not in session:
+                    session['rooms'] = []
+                if room_name not in session['rooms']:
+                    session['rooms'].append(room_name)
+
+                logger.info(f"Updated session for {sid}: joined monitor room {monitor_id}")
+                logger.info(f"   Conversations preserved: {session.get('conversations', [])}")
+                logger.info(f"   All rooms: {session['rooms']}")
+            else:
+                # Create new session with list structure
+                self.user_sessions[sid] = {
+                    'type': 'monitor',
+                    'monitor_id': monitor_id,
+                    'conversations': [],
+                    'rooms': [room_name]
+                }
+                logger.info(f"Created new session for monitor {monitor_id} ({sid})")
 
             logger.info(f"👨‍⚕️ Monitor {monitor_id} ({sid}) joined monitoring")
-            logger.info(f"   Room: {room_name}")
             logger.info(f"   Total monitors now: {len(self.monitor_rooms)}")
             logger.info(f"   All monitor IDs: {list(self.monitor_rooms.keys())}")
 
@@ -198,10 +278,24 @@ class SocketManager:
                         'risk_level': None
                     }
 
+                    logger.info(f"📤 Broadcasting monitor message to room: {room_name}")
+                    logger.info(f"   Message ID: {monitor_message.id}, Sender: monitor")
+                    logger.info(f"   Users in conversation room {conversation_id}: {self.conversation_rooms.get(conversation_id, set())}")
+
                     await self.sio.emit('new_message', {
                         'conversation_id': conversation_id,
                         'message': message_obj
                     }, room=room_name)
+
+                    # Broadcast para todos os monitors conectados
+                    for monitor_id in self.monitor_rooms:
+                        monitor_room = f"monitor_{monitor_id}"
+                        await self.sio.emit('new_message', {
+                            'conversation_id': conversation_id,
+                            'message': message_obj
+                        }, room=monitor_room)
+
+                    logger.info(f"✅ Monitor message broadcasted successfully")
 
                 else:
                     # User messages: save immediately and broadcast
@@ -239,6 +333,14 @@ class SocketManager:
                         'conversation_id': conversation_id,
                         'message': message_obj
                     }, room=room_name)
+
+                    # Broadcast para todos os monitors conectados
+                    for monitor_id in self.monitor_rooms:
+                        monitor_room = f"monitor_{monitor_id}"
+                        await self.sio.emit('new_message', {
+                            'conversation_id': conversation_id,
+                            'message': message_obj
+                        }, room=monitor_room)
 
                     # Process AI response and crisis detection in background
                     self.sio.start_background_task(
@@ -334,6 +436,14 @@ class SocketManager:
                     'message': ai_message_obj
                 }, room=room_name)
 
+                # Broadcast para todos os monitors conectados
+                for monitor_id in self.monitor_rooms:
+                    monitor_room = f"monitor_{monitor_id}"
+                    await self.sio.emit('new_message', {
+                        'conversation_id': conversation_id,
+                        'message': ai_message_obj
+                    }, room=monitor_room)
+
             # Handle crisis detection
             if crisis_analysis and crisis_analysis.requires_human:
                 logger.info(f"🔍 Crisis detected in conversation {conversation_id}")
@@ -360,12 +470,21 @@ class SocketManager:
             session_info = self.user_sessions[sid]
 
             if session_info['type'] == 'user':
-                conversation_id = session_info.get('conversation_id')
-                if conversation_id and conversation_id in self.conversation_rooms:
-                    self.conversation_rooms[conversation_id].discard(sid)
-                    if not self.conversation_rooms[conversation_id]:
-                        del self.conversation_rooms[conversation_id]
-                logger.info(f"User {sid} disconnected from conversation {conversation_id}")
+                # Handle new list-based structure
+                conversations = session_info.get('conversations', [])
+                # Also check old structure for backward compatibility
+                if not conversations:
+                    old_conv_id = session_info.get('conversation_id')
+                    if old_conv_id:
+                        conversations = [old_conv_id]
+
+                # Clean up all conversation rooms
+                for conversation_id in conversations:
+                    if conversation_id and conversation_id in self.conversation_rooms:
+                        self.conversation_rooms[conversation_id].discard(sid)
+                        if not self.conversation_rooms[conversation_id]:
+                            del self.conversation_rooms[conversation_id]
+                        logger.info(f"User {sid} disconnected from conversation {conversation_id}")
 
             elif session_info['type'] == 'monitor':
                 monitor_id = session_info.get('monitor_id')
@@ -377,6 +496,14 @@ class SocketManager:
                     else:
                         logger.info(f"Monitor {monitor_id} session {sid} disconnected ({len(self.monitor_rooms[monitor_id])} sessions remaining)")
                 logger.info(f"   Monitors still connected: {list(self.monitor_rooms.keys())}")
+
+                # Clean up conversation rooms that this monitor was in
+                conversations = session_info.get('conversations', [])
+                for conversation_id in conversations:
+                    if conversation_id and conversation_id in self.conversation_rooms:
+                        self.conversation_rooms[conversation_id].discard(sid)
+                        if not self.conversation_rooms[conversation_id]:
+                            del self.conversation_rooms[conversation_id]
 
             del self.user_sessions[sid]
 
