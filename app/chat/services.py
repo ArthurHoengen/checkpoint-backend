@@ -2,7 +2,7 @@ import asyncio
 from datetime import datetime
 from typing import List, Optional
 from sqlalchemy.orm import Session
-from sqlalchemy import desc
+from sqlalchemy import desc, or_, and_
 from . import models, schemas
 from .crisis_detector import crisis_detector, RiskLevel
 from .models import ConversationStatus, EscalationLevel
@@ -331,11 +331,19 @@ def monitor_take_control(db: Session, conversation_id: int, monitor_id: int) -> 
 
 def get_conversations_needing_attention(db: Session) -> List[models.Conversation]:
     """Busca conversas que precisam de atenção humana."""
+    # Retornar apenas conversas que:
+    # 1. Estão escaladas (sempre mostrar)
+    # 2. OU estão ativas E com usuário conectado
     return db.query(models.Conversation).filter(
-        models.Conversation.status.in_([
-            ConversationStatus.ACTIVE,
-            ConversationStatus.ESCALATED
-        ])
+        or_(
+            # Conversas escaladas sempre aparecem
+            models.Conversation.status == ConversationStatus.ESCALATED,
+            # OU conversas ativas com usuário conectado
+            and_(
+                models.Conversation.status == ConversationStatus.ACTIVE,
+                models.Conversation.user_connected == True
+            )
+        )
     ).order_by(desc(models.Conversation.updated_at)).all()
 
 def get_flagged_messages(db: Session, limit: int = 50) -> List[models.Message]:

@@ -4,7 +4,7 @@ from .config import settings
 class OllamaClient:
     def __init__(self, base_url: str = None, default_model: str = None):
         self.base_url = base_url or settings.ollama_base_url.rstrip("/")
-        self.default_model = default_model or getattr(settings, "ollama_default_model", "llama3.2:1b")
+        self.default_model = default_model or getattr(settings, "ollama_default_model", "llama3.2:3b")
         self._client = None
 
     async def _get_client(self):

@@ -478,6 +478,22 @@ class SocketManager:
                     if old_conv_id:
                         conversations = [old_conv_id]
 
+                # Update database: mark user as disconnected
+                db_gen = get_db()
+                db = next(db_gen)
+                try:
+                    for conversation_id in conversations:
+                        conv = db.query(Conversation).get(conversation_id)
+                        if conv:
+                            conv.user_connected = False
+                            logger.info(f"💤 User disconnected from conversation {conversation_id}")
+                    db.commit()
+                except Exception as e:
+                    logger.error(f"Error updating user_connected status: {e}")
+                    db.rollback()
+                finally:
+                    db.close()
+
                 # Clean up all conversation rooms
                 for conversation_id in conversations:
                     if conversation_id and conversation_id in self.conversation_rooms:
