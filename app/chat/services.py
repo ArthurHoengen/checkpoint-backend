@@ -89,8 +89,11 @@ async def get_response_with_crisis_detection(
     if conv.mode == "monitor":
         print(f"⚠️  Monitor assumiu conversa {conversation_id} - IA não vai responder")
     elif conv.status != ConversationStatus.ESCALATED and conv.mode == "ollama":
-        # Adaptar resposta baseada no nível de risco
-        ai_prompt = _build_crisis_aware_prompt(msg.text, crisis_analysis.risk_level)
+        # Buscar histórico de mensagens para contexto
+        message_history = get_last_messages(db, conversation_id, limit=10)
+
+        # Adaptar resposta baseada no nível de risco com contexto
+        ai_prompt = _build_crisis_aware_prompt(msg.text, crisis_analysis.risk_level, message_history)
         response_text = await ollama_client.ask(ai_prompt, "llama3.2:3b")
 
         ai_response = models.Message(
@@ -182,8 +185,12 @@ async def analyze_and_respond(
         )
         db.add(ai_response)
     elif conv.mode == "ollama":
-        # Adaptar resposta baseada no nível de risco
-        ai_prompt = _build_crisis_aware_prompt(user_message.text, crisis_analysis.risk_level)
+        # Buscar histórico de mensagens para contexto (excluindo a mensagem atual)
+        all_messages = get_last_messages(db, conversation_id, limit=11)
+        message_history = [m for m in all_messages if m.id != user_message_id][:10]
+
+        # Adaptar resposta baseada no nível de risco com contexto
+        ai_prompt = _build_crisis_aware_prompt(user_message.text, crisis_analysis.risk_level, message_history)
         response_text = await ollama_client.ask(ai_prompt, "llama3.2:3b")
 
         ai_response = models.Message(
@@ -243,11 +250,27 @@ def _map_risk_to_escalation(risk_level: RiskLevel) -> EscalationLevel:
     }
     return mapping.get(risk_level, EscalationLevel.NONE)
 
-def _build_crisis_aware_prompt(user_message: str, risk_level: RiskLevel) -> str:
-    """Constrói prompt para IA baseado no nível de risco detectado."""
+def _build_crisis_aware_prompt(user_message: str, risk_level: RiskLevel, message_history: List[models.Message] = None) -> str:
+    """Constrói prompt para IA baseado no nível de risco detectado, incluindo histórico da conversa."""
 
     base_context = """Você é um conselheiro de apoio emocional. Fale em português claro e natural.
 Seja empático, acolhedor e profissional. Responda com 2-3 parágrafos curtos."""
+
+    # Construir histórico de conversa para contexto
+    conversation_context = ""
+    if message_history:
+        # Reverter para ordem cronológica (mensagens mais antigas primeiro)
+        history_messages = list(reversed(message_history))
+        conversation_lines = []
+        for msg in history_messages:
+            if msg.sender == "user":
+                conversation_lines.append(f"Pessoa: {msg.text}")
+            elif msg.sender == "ai":
+                conversation_lines.append(f"Você: {msg.text}")
+            # Ignorar mensagens de sistema
+
+        if conversation_lines:
+            conversation_context = "\n\nHistórico da conversa:\n" + "\n".join(conversation_lines) + "\n"
 
     if risk_level == RiskLevel.HIGH:
         return f"""{base_context}
@@ -257,8 +280,8 @@ IMPORTANTE: Esta pessoa pode estar em risco emocional.
 - Ofereça esperança
 - Mencione o CVV (Centro de Valorização da Vida): 188
 - Mantenha tom calmo e acolhedor
-
-Pessoa disse: "{user_message}"
+{conversation_context}
+Pessoa disse agora: "{user_message}"
 
 Resposta empática em português:"""
 
@@ -270,15 +293,15 @@ Esta pessoa está passando por dificuldades.
 - Faça perguntas para entender melhor
 - Valide os sentimentos
 - Ofereça apoio prático
-
-Pessoa disse: "{user_message}"
+{conversation_context}
+Pessoa disse agora: "{user_message}"
 
 Resposta em português:"""
 
     else:
         return f"""{base_context}
-
-Pessoa disse: "{user_message}"
+{conversation_context}
+Pessoa disse agora: "{user_message}"
 
 Resposta acolhedora em português:"""
 

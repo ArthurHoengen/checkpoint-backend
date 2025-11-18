@@ -461,6 +461,23 @@ class SocketManager:
 
         except Exception as e:
             logger.error(f"Error processing AI response: {e}")
+
+            # Send error message to user so they know something went wrong
+            error_message_obj = {
+                'id': None,
+                'sender': 'system',
+                'text': 'Desculpe, houve um problema ao gerar a resposta. Por favor, tente novamente.',
+                'created_at': datetime.now().isoformat(),
+                'conversation_id': conversation_id,
+                'flagged': False,
+                'risk_level': None
+            }
+
+            await self.sio.emit('new_message', {
+                'conversation_id': conversation_id,
+                'message': error_message_obj
+            }, room=room_name)
+
         finally:
             db.close()
 

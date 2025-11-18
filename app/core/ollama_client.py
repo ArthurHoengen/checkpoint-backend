@@ -9,7 +9,9 @@ class OllamaClient:
 
     async def _get_client(self):
         if self._client is None:
-            self._client = httpx.AsyncClient(timeout=30.0)
+            # Increase timeout to 120 seconds for slower models
+            # This prevents context cancellation for longer generation times
+            self._client = httpx.AsyncClient(timeout=120.0)
         return self._client
 
     async def generate(self, model: str, prompt: str, stream: bool = False):
