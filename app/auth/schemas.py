@@ -1,5 +1,4 @@
 from pydantic import BaseModel
-from typing import Optional
 
 class UserLogin(BaseModel):
     username: str
@@ -8,8 +7,6 @@ class UserLogin(BaseModel):
 class UserOut(BaseModel):
     id: int
     username: str
-    email: Optional[str] = None
-    role: Optional[str] = None
 
     class Config:
         from_attributes = True
