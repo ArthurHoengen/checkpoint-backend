@@ -160,6 +160,22 @@ class SocketManager:
 
                 logger.info(f"✅ Monitor {monitor_id} authenticated successfully")
 
+                # Buscar user_id do banco de dados
+                db_gen = get_db()
+                db = next(db_gen)
+                try:
+                    from app.auth.models import User
+                    user = db.query(User).filter(User.username == username).first()
+                    if not user:
+                        logger.error(f"❌ User not found in database: {username}")
+                        await self.sio.emit('error', {'message': 'User not found'}, to=sid)
+                        return
+
+                    user_id = user.id
+                    logger.info(f"✅ Found user_id {user_id} for monitor {monitor_id}")
+                finally:
+                    db.close()
+
             except JWTError as e:
                 logger.error(f"❌ JWT validation failed for monitor {monitor_id}: {e}")
                 await self.sio.emit('error', {'message': 'Invalid or expired authentication token'}, to=sid)
@@ -184,6 +200,7 @@ class SocketManager:
                 session = self.user_sessions[sid]
                 session['type'] = 'monitor'
                 session['monitor_id'] = monitor_id
+                session['user_id'] = user_id  # Salvar user_id
 
                 # Add room to list if not already there
                 if 'rooms' not in session:
@@ -192,6 +209,7 @@ class SocketManager:
                     session['rooms'].append(room_name)
 
                 logger.info(f"Updated session for {sid}: joined monitor room {monitor_id}")
+                logger.info(f"   User ID: {user_id}")
                 logger.info(f"   Conversations preserved: {session.get('conversations', [])}")
                 logger.info(f"   All rooms: {session['rooms']}")
             else:
@@ -199,10 +217,12 @@ class SocketManager:
                 self.user_sessions[sid] = {
                     'type': 'monitor',
                     'monitor_id': monitor_id,
+                    'user_id': user_id,  # Salvar user_id
                     'conversations': [],
                     'rooms': [room_name]
                 }
                 logger.info(f"Created new session for monitor {monitor_id} ({sid})")
+                logger.info(f"   User ID: {user_id}")
 
             logger.info(f"👨‍⚕️ Monitor {monitor_id} ({sid}) joined monitoring")
             logger.info(f"   Total monitors now: {len(self.monitor_rooms)}")
@@ -256,12 +276,19 @@ class SocketManager:
                         db.close()
                         return
 
+                    # Buscar user_id da sessão do monitor
+                    monitor_user_id = None
+                    if sid in self.user_sessions:
+                        monitor_user_id = self.user_sessions[sid].get('user_id')
+                        logger.info(f"📝 Monitor user_id from session: {monitor_user_id}")
+
                     # Monitor messages: save and broadcast immediately
                     monitor_message = Message(
                         sender=sender,
                         text=message_text,
                         conversation_id=conversation_id,
-                        session_id=session_id
+                        session_id=session_id,
+                        user_id=monitor_user_id  # Adicionar user_id do monitor
                     )
                     db.add(monitor_message)
                     db.commit()
